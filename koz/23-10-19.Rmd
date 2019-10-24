@@ -1,0 +1,116 @@
+---
+title: "Datos de Miercoles"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(tm)
+library(wordcloud2)
+library(topicmodels)
+library(LDAvis)
+library(tsne)
+```
+
+```{r}
+load("../datos/2019/2019-10-23/01-conceptos.rdata")
+
+conceptos <- conceptos %>%
+  mutate(concepto = str_replace_all(tolower(concepto),pattern = '[[:punct:]]',replacement = ' '),
+         acuerdo = str_replace_all(tolower(acuerdo),pattern = '[[:punct:]]',replacement = ' ')) %>% 
+  filter(!str_detect(acuerdo, 'desacuerdo'))
+
+conceptos %>% 
+  group_by(concepto) %>% 
+  summarise(n=n()) %>% 
+  arrange(-n)
+```
+
+```{r}
+texto <- conceptos %>% 
+  transmute(texto = glue::glue('{concepto} {concepto} {concepto} {justificacion}')) %>% 
+  pull(texto)
+
+```
+
+
+```{r}
+myCorpus = Corpus(VectorSource(texto))
+myCorpus = tm_map(myCorpus, content_transformer(tolower))
+myCorpus = tm_map(myCorpus, removePunctuation)
+myCorpus = tm_map(myCorpus, removeNumbers)
+myCorpus = tm_map(myCorpus, removeWords, stopwords(kind = "es"))
+myCorpus = tm_map(myCorpus, content_transformer(function(x) str_remove_all(x, pattern = '\r|\n')))
+```
+
+```{r}
+inspect(myCorpus[1:10])
+```
+
+```{r}
+myDTM = DocumentTermMatrix(myCorpus, control = list(minWordLength = 1))
+inspect(myDTM)
+```
+
+```{r}
+palabras_frecuentes <- findMostFreqTerms(myDTM,n = 40, INDEX = rep(1,nDocs(myDTM)))[[1]]
+
+palabras_frecuentes
+palabras_frecuentes <- tibble(word = names(palabras_frecuentes), freq =palabras_frecuentes)
+
+wordcloud2(palabras_frecuentes, shuffle = FALSE)
+```
+
+```{r}
+ui = unique(myDTM$i)
+dtm = myDTM[ui,]
+
+dim(myDTM)
+dim(dtm)
+```
+
+```{r}
+lda_fit <- LDA(dtm, k = 10,method = "Gibbs", control = list(delta=0.6,seed = 1234))
+lda_fit
+```
+
+```{r}
+saveRDS(lda_fit,'results/lda_fit.rds')
+```
+
+```{r}
+Terms <- terms(lda_fit, 10)
+Terms
+```
+
+
+```{r}
+topicmodels_json_ldavis <- function(fitted, dtm){
+    svd_tsne <- function(x) tsne(svd(x)$u)
+
+    # Find required quantities
+    phi <- as.matrix(posterior(fitted)$terms)
+    theta <- as.matrix(posterior(fitted)$topics)
+    vocab <- colnames(phi)
+    term_freq <- slam::col_sums(dtm)
+
+    # Convert to json
+    json_lda <- LDAvis::createJSON(phi = phi, theta = theta,
+                            vocab = vocab,
+                            mds.method = svd_tsne,
+                            plot.opts = list(xlab="tsne", ylab=""),
+                            doc.length = as.vector(table(dtm$i)),
+                            term.frequency = term_freq)
+
+    return(json_lda)
+}
+```
+
+```{r}
+json_res <- topicmodels_json_ldavis(lda_fit, dtm)
+```
+
+```{r}
+serVis(json_res, as.gist = TRUE)
+```
+
